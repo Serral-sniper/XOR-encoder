@@ -4,31 +4,13 @@ namespace XorEncoder;
 
 /// <summary>
 /// Orchestre la descente de K depuis kStart jusqu'à la borne théorique.
-///
-/// Pour chaque K :
-///   1. Lance le solveur glouton (rapide, parallèle).
-///   2. Si succès → sauvegarde, tente K-1.
-///   3. Si échec  → arrêt (K semble infaisable).
+/// Chaque K dispose d'un budget temps fixe (Config.TimeoutPerKSeconds).
 /// </summary>
 public sealed class SearchEngine
 {
-    // ── Borne théorique ───────────────────────────────────────
-
-    /// <summary>
-    /// Borne inférieure mathématique :
-    ///   usage_min = K + (N-1-K)*2 = 2N - K - 2
-    ///   Condition : 2N - K - 2 ≤ K × capacity
-    ///   => K ≥ (2N - 2) / (capacity + 1)
-    /// </summary>
     public static int TheoreticalLowerBound() =>
         (int)Math.Ceiling((2.0 * Config.NItems - 2) / (Config.Capacity + 1));
 
-    // ── Recherche principale ──────────────────────────────────
-
-    /// <summary>
-    /// Lance la recherche descendante et retourne la meilleure solution trouvée,
-    /// ou null si aucune solution n'a pu être construite.
-    /// </summary>
     public AssignmentResult? Run()
     {
         int kTheory = TheoreticalLowerBound();
@@ -48,16 +30,14 @@ public sealed class SearchEngine
 
             if (result is { Success: true })
             {
-                ConsoleDisplay.PrintGreedySuccess(result.Seed);
+                ConsoleDisplay.PrintSolverSuccess(result);
                 best = result;
                 ConsoleDisplay.PrintDescending(k - 1);
                 k--;
             }
             else
             {
-                int fail = result?.Failures ?? -1;
-                ConsoleDisplay.PrintGreedyFail(fail);
-                ConsoleDisplay.PrintInfeasible(k);
+                ConsoleDisplay.PrintInfeasible(k, Config.TimeoutPerKSeconds);
                 break;
             }
         }
@@ -72,21 +52,19 @@ public sealed class SearchEngine
         return best;
     }
 
-    // ── Tentative pour un K donné ─────────────────────────────
-
     private static AssignmentResult TryK(int k)
     {
-        ConsoleDisplay.PrintGreedyStart(Config.MaxSeedsGreedy);
-        var sw = Stopwatch.StartNew();
+        ConsoleDisplay.PrintSolverStart(k, Config.TimeoutPerKSeconds);
 
-        // Mode hybride : glouton pur (phase 1) + local search incrémental (phase 2)
-        // Le local search est ~K fois plus rapide par itération grâce à la
-        // mise à jour incrémentale de la ComboTable (O(K²) vs O(K³)).
-        AssignmentResult result = Config.ParallelGreedy
-            ? GreedySolver.SolveHybrid(k, Config.MaxSeedsGreedy)
-            : GreedySolver.SolveSequential(k, Config.MaxSeedsGreedy);
+        using var cts = Config.TimeoutPerKSeconds > 0
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(Config.TimeoutPerKSeconds))
+            : new CancellationTokenSource();
 
-        ConsoleDisplay.PrintGreedyEnd(sw.Elapsed.TotalSeconds);
+        var sw     = Stopwatch.StartNew();
+        var result = GreedySolver.SolveWithTimeout(k, cts.Token);
+        sw.Stop();
+
+        ConsoleDisplay.PrintSolverEnd(result, sw.Elapsed.TotalSeconds);
         return result;
     }
 }
